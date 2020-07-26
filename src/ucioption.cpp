@@ -70,6 +70,7 @@ void init(OptionsMap& o) {
   o["UCI_Chess960"]          << Option(false);
   o["UCI_Variant"]           << Option("makruk", {"makruk"});
   o["EnableCounting"]        << Option(true);
+  o["CountingLimit"]         << Option(128, 8, 128);
   o["SyzygyPath"]            << Option("<empty>", on_tb_path);
   o["SyzygyProbeDepth"]      << Option(1, 1, 100);
   o["Syzygy50MoveRule"]      << Option(true);
