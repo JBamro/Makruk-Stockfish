@@ -115,6 +115,11 @@ std::ostream& operator<<(std::ostream& os, const Position& pos) {
          << "\nTablebases DTZ: " << std::setw(4) << dtz << " (" << s2 << ")";
   }
 
+  if (pos.honor_count()){
+      os << "\nHonor limit : " << std::setw(4) << pos.counting_limit()
+         << "\nHonor count : " << std::setw(4) << (pos.honor_count() + 1) / 2; 
+  }
+
   return os;
 }
 
@@ -255,6 +260,8 @@ void Position::set_state(StateInfo* si) const {
   si->nonPawnMaterial[WHITE] = si->nonPawnMaterial[BLACK] = VALUE_ZERO;
   si->psq = SCORE_ZERO;
   si->checkersBB = attackers_to(square<KING>(sideToMove)) & pieces(~sideToMove);
+  st->honor_cnt = 0;
+  st->honor_limit = Options["CountingLimit"];
 
   set_check_info(si);
 
@@ -541,6 +548,9 @@ void Position::do_move(Move m, StateInfo& newSt, bool givesCheck) {
   ++st->rule50;
   ++st->pliesFromNull;
 
+  // Increment honor_cnt but reset to 0 later if there is at lease one pawn.
+  ++st->honor_cnt;
+
   Color us = sideToMove;
   Color them = ~us;
   Square from = from_sq(m);
@@ -555,7 +565,6 @@ void Position::do_move(Move m, StateInfo& newSt, bool givesCheck) {
   if (captured)
   {
       Square capsq = to;
-      int old_counting_limit = count<ALL_PIECES>(~color_of(captured)) == 1 ? counting_limit() : 0;
 
       // If the captured piece is a pawn, update pawn hash key, otherwise
       // update non-pawn material.
@@ -575,15 +584,37 @@ void Position::do_move(Move m, StateInfo& newSt, bool givesCheck) {
       // Update incremental scores
       st->psq -= PSQT::psq[captured][capsq];
 
-      // Reset rule 50 counter unless we are in a pawnless endgame
-      if (count<PAWN>() || (type_of(captured) == PAWN && count<ALL_PIECES>(color_of(captured)) > 1))
-          st->rule50 = 0;
-      // Baring the opponent's king
-      else if (count<ALL_PIECES>(color_of(captured)) == 1)
-          st->rule50 = 2 * count<ALL_PIECES>();
-      // Bare king captures, increase half-move clock to fake old counting limit
-      else if (count<ALL_PIECES>(~color_of(captured)) == 1)
-          st->rule50 += 2 * (counting_limit() - old_counting_limit);
+      // Reset rule 50 counter
+      st->rule50 = 0;
+
+      // Pawnless endgame
+      if (!count<PAWN>())
+      { 
+          // Last pawn was captured
+          if (type_of(captured) == PAWN)
+          { 
+              set_honor_limit();
+              
+              // Begin counting when weak side moves
+              // Baring the opponent's king, piece honor rule
+              if (count<ALL_PIECES>(color_of(captured)) == 1) 
+                  st->honor_cnt = 2 * count<ALL_PIECES>();
+
+              // Last pawn captued by bared king, piece honor rule
+              else if (count<ALL_PIECES>(~color_of(captured)) == 1) 
+                  st->honor_cnt = 2 * count<ALL_PIECES>() - 1;
+
+              // Board honor rule
+              else st->honor_cnt = (st->nonPawnMaterial[us] > st->nonPawnMaterial[them]) ? 0 : -1;
+          }
+
+          // Last piece captured by strong side
+          else if (count<ALL_PIECES>(color_of(captured)) == 1)
+          { 
+              set_honor_limit();
+              st->honor_cnt = 2 * count<ALL_PIECES>();
+          }
+      }
   }
 
   // Update hash key
@@ -609,25 +640,41 @@ void Position::do_move(Move m, StateInfo& newSt, bool givesCheck) {
           st->pawnKey ^= Zobrist::psq[pc][to];
           st->materialKey ^=  Zobrist::psq[promotion][pieceCount[promotion]-1]
                             ^ Zobrist::psq[pc][pieceCount[pc]];
-
+          
           // Update incremental score
           st->psq += PSQT::psq[promotion][to] - PSQT::psq[pc][to];
 
           // Update material
           st->nonPawnMaterial[us] += PieceValue[MG][promotion];
+
+          // Promoting the last pawn
+          if (!count<PAWN>()) 
+          {
+              set_honor_limit();
+
+              // opponent bare king, piece honor rule
+              if (count<ALL_PIECES>(them) == 1)
+              {
+                  // Begin counting when weak side moves
+                  st->honor_cnt = 2 * count<ALL_PIECES>();
+              }  
+
+              // Board honor rule
+              else st->honor_cnt = (st->nonPawnMaterial[us] > st->nonPawnMaterial[them]) ? 0 : -1;
+          }
       }
 
       // Update pawn hash key and prefetch access to pawnsTable
       st->pawnKey ^= Zobrist::psq[pc][from] ^ Zobrist::psq[pc][to];
       prefetch2(thisThread->pawnsTable[st->pawnKey]);
 
-      // Promoting the last pawn when opponent only has a bare king
-      if (!count<PAWN>() && count<ALL_PIECES>(them) == 1)
-          st->rule50 = 2 * count<ALL_PIECES>();
       // Reset rule 50 counter
-      else
-          st->rule50 = 0;
+      st->rule50 = 0;
   }
+
+  // Reset honor_cnt;
+  if(count<PAWN>())
+    st->honor_cnt = 0;
 
   // Update incremental scores
   st->psq += PSQT::psq[pc][to] - PSQT::psq[pc][from];
@@ -710,6 +757,7 @@ void Position::do_null_move(StateInfo& newSt) {
   prefetch(TT.first_entry(st->key));
 
   ++st->rule50;
+  ++st->honor_cnt;
   st->pliesFromNull = 0;
 
   sideToMove = ~sideToMove;
@@ -824,15 +872,24 @@ bool Position::is_draw(int ply) const {
       if (count<ALL_PIECES>() == 2)
           return true;
 
+      // Only queen or knight can not give a check mate
+      if (  (count<ALL_PIECES>(BLACK) == 1 && count<ALL_PIECES>(WHITE) == 2 && (count<QUEEN>(WHITE) || count<KNIGHT>(WHITE)))
+          ||(count<ALL_PIECES>(WHITE) == 1 && count<ALL_PIECES>(BLACK) == 2 && (count<QUEEN>(BLACK) || count<KNIGHT>(BLACK)))
+          ||(count<ALL_PIECES>(BLACK) == 1 && count<ALL_PIECES>(WHITE) == 3 && count<KNIGHT>(WHITE) == 2)
+          ||(count<ALL_PIECES>(WHITE) == 1 && count<ALL_PIECES>(BLACK) == 3 && count<KNIGHT>(BLACK) == 2))
+            return true;
+
       // Counting rules
-      if (   st->rule50 > 2 * ((count<ALL_PIECES>(WHITE) == 1 || count<ALL_PIECES>(BLACK) == 1) ? counting_limit() : 64)
+      if (   honor_count() > 2 * counting_limit()   // Strong side plays last move and no check mate.
           && (!checkers() || MoveList<LEGAL>(*this).size())
           && Options["EnableCounting"])
           return true;
   }
-  // 64-move rule
-  else if (st->rule50 > 127 && (!checkers() || MoveList<LEGAL>(*this).size()))
-      return true;
+  
+  // A pawn is promoted to queen, but a queen cannot give a check mate
+  if (  (count<ALL_PIECES>(BLACK) == 1 && count<ALL_PIECES>(WHITE) == 2 && count<PAWN>(WHITE))
+      ||(count<ALL_PIECES>(WHITE) == 1 && count<ALL_PIECES>(BLACK) == 2 && count<PAWN>(BLACK)))  
+    return true;
 
   int end = std::min(st->rule50, st->pliesFromNull);
 
@@ -899,6 +956,13 @@ bool Position::pos_is_ok() const {
       || piece_on(square<KING>(BLACK)) != B_KING)
       assert(0 && "pos_is_ok: Default");
 
+  if (   (pieces(PAWN) & (Rank1BB | Rank2BB | Rank7BB | Rank8BB))
+      || (pieces(WHITE, PAWN) & Rank6BB)
+      || (pieces(BLACK, PAWN) & Rank3BB)
+      || pieceCount[W_PAWN] > 8
+      || pieceCount[B_PAWN] > 8)
+      assert(0 && "pos_is_ok: Pawns");
+
   if (Fast)
       return true;
 
@@ -906,11 +970,6 @@ bool Position::pos_is_ok() const {
       || pieceCount[B_KING] != 1
       || attackers_to(square<KING>(~sideToMove)) & pieces(sideToMove))
       assert(0 && "pos_is_ok: Kings");
-
-  if (   (pieces(PAWN) & (Rank1BB | Rank8BB))
-      || pieceCount[W_PAWN] > 8
-      || pieceCount[B_PAWN] > 8)
-      assert(0 && "pos_is_ok: Pawns");
 
   if (   (pieces(WHITE) & pieces(BLACK))
       || (pieces(WHITE) | pieces(BLACK)) != pieces()

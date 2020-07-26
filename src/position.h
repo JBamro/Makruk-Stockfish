@@ -42,6 +42,8 @@ struct StateInfo {
   Value  nonPawnMaterial[COLOR_NB];
   int    rule50;
   int    pliesFromNull;
+  int    honor_cnt;
+  int    honor_limit;
   Score  psq;
 
   // Not copied when making a move (will be recomputed anyhow)
@@ -145,7 +147,9 @@ public:
   Thread* this_thread() const;
   bool is_draw(int ply) const;
   int rule50_count() const;
+  int honor_count() const;
   int counting_limit() const;
+  void set_honor_limit();
   Score psq_score() const;
   Value non_pawn_material(Color c) const;
   Value non_pawn_material() const;
@@ -319,21 +323,43 @@ inline int Position::rule50_count() const {
   return st->rule50;
 }
 
-inline int Position::counting_limit() const {
-  Color strongSide = count<ALL_PIECES>(WHITE) > 1 ? WHITE : BLACK;
-  assert(count<ALL_PIECES>(strongSide) > 1 && count<ALL_PIECES>(~strongSide) == 1);
+// Counting rules
+// When neither side has any pawns, the game must be completed within a certain number of 
+// moves or it is declared a draw. When a piece is captured the count restarts only if it 
+// is the last piece of a player in the game (bare king). (credit: wikipedia)
 
-  if (count<ROOK>(strongSide) > 1)
-      return 8;
-  if (count<ROOK>(strongSide) == 1)
-      return 16;
-  if (count<BISHOP>(strongSide) > 1)
-      return 22;
-  if (count<KNIGHT>(strongSide) > 1)
-      return 32;
-  if (count<BISHOP>(strongSide) == 1)
-      return 44;
-  return 64;
+inline int Position::honor_count() const {
+  return st->honor_cnt;
+}
+
+inline int Position::counting_limit() const {
+  return st->honor_limit;
+}
+
+inline void Position::set_honor_limit() {
+
+  assert(!count<PAWN>());
+
+  Color strongSide = st->nonPawnMaterial[WHITE] > st->nonPawnMaterial[BLACK] ? WHITE : BLACK;
+
+  // Neither side has any pawns.
+  if(count<ALL_PIECES>(~strongSide) > 1){ // Weak side has one or more pieces besides king. 
+    st->honor_limit = 64;
+  }
+  else { // bare king 
+    if (count<ROOK>(strongSide) > 1)
+      st->honor_limit = 8;
+    else if (count<ROOK>(strongSide) == 1)
+      st->honor_limit = 16;
+    else if (count<BISHOP>(strongSide) > 1)
+      st->honor_limit = 22;
+    else if (count<KNIGHT>(strongSide) > 1)
+      st->honor_limit = 32;
+    else if (count<BISHOP>(strongSide) == 1)
+      st->honor_limit = 44;
+    else
+      st->honor_limit = 64;
+  }
 }
 
 inline bool Position::queen_pair(Color c) const {
