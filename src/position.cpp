@@ -861,8 +861,8 @@ bool Position::see_ge(Move m, Value threshold) const {
 
 
 /// Position::is_draw() tests whether the position is drawn by counting rules
-/// 64-move rule, or repetition. It does not detect stalemates.
-/// 64-move rule and 3fold-repetition are no official Makruk rules.
+/// or 3fold-repetition. It does not detect stalemates.
+/// 3fold-repetition are no official Makruk rules.
 
 bool Position::is_draw(int ply) const {
 
@@ -912,7 +912,6 @@ bool Position::is_draw(int ply) const {
 
   return false;
 }
-
 
 /// Position::flip() flips position with the white and black sides reversed. This
 /// is only useful for debugging e.g. for finding evaluation symmetry bugs.

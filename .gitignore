@@ -4,4 +4,5 @@
 stockfish
 .depend
 .vscode
-
+bin
+bin0
