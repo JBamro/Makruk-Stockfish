@@ -57,6 +57,7 @@ void init(OptionsMap& o) {
 
   const int MaxHashMB = Is64Bit ? 1024 * 1024 : 2048;
 
+  o["Protocol"]              << Option("uci", {"uci", "xboard"});
   o["Debug Log File"]        << Option("", on_logger);
   o["Contempt"]              << Option(0, -100, 100);
   o["Threads"]               << Option(1, 1, 512, on_threads);
@@ -69,6 +70,7 @@ void init(OptionsMap& o) {
   o["nodestime"]             << Option(0, 0, 10000);
   o["UCI_Chess960"]          << Option(false);
   o["UCI_Variant"]           << Option("makruk", {"makruk"});
+  o["UCI_AnalyseMode"]       << Option(false);
   o["EnableCounting"]        << Option(true);
   o["CountingLimit"]         << Option(128, 8, 128);
   o["SyzygyPath"]            << Option("<empty>", on_tb_path);
@@ -82,6 +84,38 @@ void init(OptionsMap& o) {
 /// insertion order (the idx field) and in the format defined by the UCI protocol.
 
 std::ostream& operator<<(std::ostream& os, const OptionsMap& om) {
+
+  if (Options["Protocol"] == "xboard")
+  {
+      for (size_t idx = 0; idx < om.size(); ++idx)
+          for (const auto& it : om)
+              if (it.second.idx == idx && it.first != "Protocol" && it.first != "UCI_Variant"
+                                       && it.first != "Threads" && it.first != "Hash")
+              {
+                  const Option& o = it.second;
+                  os << "\nfeature option=\"" << it.first << " -" << o.type;
+
+                  if (o.type == "string" || o.type == "combo")
+                      os << " " << o.defaultValue;
+                  else if (o.type == "check")
+                      os << " " << int(o.defaultValue == "true");
+
+                  if (o.type == "combo")
+                      for (string value : o.comboValues)
+                          if (value != o.defaultValue)
+                              os << " /// " << value;
+
+                  if (o.type == "spin")
+                      os << " " << int(stof(o.defaultValue))
+                         << " " << o.min
+                         << " " << o.max;
+
+                  os << "\"";
+
+                  break;
+              }
+  }
+  else
 
   for (size_t idx = 0; idx < om.size(); ++idx)
       for (const auto& it : om)
@@ -121,12 +155,12 @@ Option::Option(bool v, OnChange f) : type("check"), min(0), max(0), on_change(f)
 Option::Option(OnChange f) : type("button"), min(0), max(0), on_change(f)
 {}
 
-Option::Option(int v, int minv, int maxv, OnChange f) : type("spin"), min(minv), max(maxv), on_change(f)
+Option::Option(double v, int minv, int maxv, OnChange f) : type("spin"), min(minv), max(maxv), on_change(f)
 { defaultValue = currentValue = std::to_string(v); }
 
-Option::operator int() const {
+Option::operator double() const {
   assert(type == "check" || type == "spin");
-  return (type == "spin" ? stoi(currentValue) : currentValue == "true");
+  return (type == "spin" ? stof(currentValue) : currentValue == "true");
 }
 
 Option::operator std::string() const {
@@ -134,9 +168,15 @@ Option::operator std::string() const {
   return currentValue;
 }
 
-int Option::compare(const char* str) const {
-  assert(type == "string" || type == "combo");
-  return currentValue.compare(str);
+bool Option::operator==(const char* s) const {
+  assert(type == "combo");
+  return   !CaseInsensitiveLess()(currentValue, s)
+        && !CaseInsensitiveLess()(s, currentValue);
+}
+
+bool Option::operator!=(const char* s) const {
+  assert(type == "combo");
+  return !(*this == s);
 }
 
 
@@ -152,8 +192,8 @@ void Option::operator<<(const Option& o) {
 
 
 /// operator=() updates currentValue and triggers on_change() action. It's up to
-/// the GUI to check for option's limits, but we could receive the new value from
-/// the user by console window, so let's check the bounds anyway.
+/// the GUI to check for option's limits, but we could receive the new value
+/// from the user by console window, so let's check the bounds anyway.
 
 Option& Option::operator=(const string& v) {
 
@@ -162,8 +202,17 @@ Option& Option::operator=(const string& v) {
   if (   (type != "button" && v.empty())
       || (type == "check" && v != "true" && v != "false")
       || (type == "combo" && (std::find(comboValues.begin(), comboValues.end(), v) == comboValues.end()))
-      || (type == "spin" && (stoi(v) < min || stoi(v) > max)))
+      || (type == "spin" && (stof(v) < min || stof(v) > max)))
       return *this;
+
+  if (type == "combo")
+  {
+      OptionsMap comboMap; // To have case insensitive compare
+      for (string token : comboValues)
+          comboMap[token] << Option();
+      if (!comboMap.count(v) || v == "var")
+          return *this;
+  }
 
   if (type != "button")
       currentValue = v;
@@ -172,6 +221,18 @@ Option& Option::operator=(const string& v) {
       on_change(*this);
 
   return *this;
+}
+
+void Option::set_combo(std::vector<std::string> newComboValues) {
+    comboValues = newComboValues;
+}
+
+void Option::set_default(std::string newDefault) {
+    defaultValue = currentValue = newDefault;
+}
+
+const std::string Option::get_type() const {
+    return type;
 }
 
 } // namespace UCI

@@ -238,15 +238,26 @@ void MainThread::search() {
   Time.init(Limits, us, rootPos.game_ply());
   TT.new_search();
 
-  int contempt = Options["Contempt"] * PawnValueEg / 100; // From centipawns
+  int contempt = int(Options["Contempt"]) * PawnValueEg / 100; // From centipawns
   DrawValue[ us] = VALUE_DRAW - Value(contempt);
   DrawValue[~us] = VALUE_DRAW + Value(contempt);
 
-  if (rootMoves.empty())
-  {
+  if (rootMoves.empty()){
       rootMoves.emplace_back(MOVE_NONE);
+      Value result = rootPos.checkers() ? -VALUE_MATE : VALUE_DRAW;
+      // xboard
+      if (Options["Protocol"] == "xboard"){ 
+          // rotate MOVE_NONE to front (for optional game end)
+          std::rotate(rootMoves.rbegin(), rootMoves.rbegin() + 1, rootMoves.rend());
+          sync_cout << (  result == VALUE_DRAW ? "1/2-1/2 {Draw}"
+                        : (rootPos.side_to_move() == BLACK ? -result : result) == VALUE_MATE ? "1-0 {White wins}"
+                        : "0-1 {Black wins}")
+                    << sync_endl;
+      }
+      // UCI
+      else
       sync_cout << "info depth 0 score "
-                << UCI::value(rootPos.checkers() ? -VALUE_MATE : VALUE_DRAW)
+                << UCI::value(result)
                 << sync_endl;
   }
   else
@@ -282,8 +293,8 @@ void MainThread::search() {
   if (Limits.npmsec)
       Time.availableNodes += Limits.inc[us] - Threads.nodes_searched();
 
-  // Check if there are threads with a better score than main thread
-  Thread* bestThread = this;
+  // Check if there are threads with a better score than main thread 
+  bestThread = this;
   if (   !this->easyMovePlayed
       &&  Options["MultiPV"] == 1
       && !Limits.depth
@@ -307,6 +318,14 @@ void MainThread::search() {
   // Send new PV when needed
   if (bestThread != this)
       sync_cout << UCI::pv(bestThread->rootPos, bestThread->completedDepth, -VALUE_INFINITE, VALUE_INFINITE) << sync_endl;
+
+  if (Options["Protocol"] == "xboard")
+  {
+      // Send move only when not in analyze mode and not at game end
+      if (!Options["UCI_AnalyseMode"] && rootMoves[0].pv[0] != MOVE_NONE && !Threads.abort.exchange(true))
+          sync_cout << "move " << UCI::move(bestThread->rootMoves[0].pv[0]) << sync_endl;
+      return;
+  }
 
   sync_cout << "bestmove " << UCI::move(bestThread->rootMoves[0].pv[0]);
 
@@ -1519,6 +1538,21 @@ string UCI::pv(const Position& pos, Depth depth, Value alpha, Value beta) {
       if (ss.rdbuf()->in_avail()) // Not at first line
           ss << "\n";
 
+      if (Options["Protocol"] == "xboard")
+      {
+          ss << d << " "
+             << UCI::value(v) << " "
+             << elapsed / 10 << " "
+             << nodesSearched << " "
+             << rootMoves[i].selDepth << " "
+             << nodesSearched * 1000 / elapsed << " "
+             << tbHits << "\t";
+
+          for (Move m : rootMoves[i].pv)
+              ss << " " << UCI::move(m);
+      }
+      else
+      {      
       ss << "info"
          << " depth "    << d / ONE_PLY
          << " seldepth " << rootMoves[i].selDepth
@@ -1540,6 +1574,7 @@ string UCI::pv(const Position& pos, Depth depth, Value alpha, Value beta) {
 
       for (Move m : rootMoves[i].pv)
           ss << " " << UCI::move(m);
+      }
   }
 
   return ss.str();
@@ -1578,9 +1613,9 @@ bool RootMove::extract_ponder_from_tt(Position& pos) {
 void Tablebases::filter_root_moves(Position& pos, Search::RootMoves& rootMoves) {
 
     RootInTB = false;
-    UseRule50 = Options["Syzygy50MoveRule"];
-    ProbeDepth = Options["SyzygyProbeDepth"] * ONE_PLY;
-    Cardinality = Options["SyzygyProbeLimit"];
+    UseRule50 = bool(Options["Syzygy50MoveRule"]);
+    ProbeDepth = int(Options["SyzygyProbeDepth"]) * ONE_PLY;
+    Cardinality = int(Options["SyzygyProbeLimit"]);
 
     // Skip TB probing when no TB found: !TBLargest -> !TB::Cardinality
     if (Cardinality > MaxCardinality)
