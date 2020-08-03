@@ -1,3 +1,7 @@
 *.o
+*.exe
 stockfish
 .depend
+bin
+bin0
+.vscode
