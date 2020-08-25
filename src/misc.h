@@ -29,7 +29,8 @@
 
 #include "types.h"
 
-const std::string engine_info(bool to_uci = false);
+const std::string engine_info(bool to_uci, bool to_xboard = false);
+const std::string compiler_info();
 void prefetch(void* addr);
 void prefetch2(void* addr);
 void start_logger(const std::string& fname);

@@ -86,6 +86,8 @@ struct MainThread : public Thread {
   double bestMoveChanges;
   Value previousScore;
   int callsCnt;
+
+  Thread* bestThread; // to fetch best move when in XBoard mode
 };
 
 
@@ -99,16 +101,15 @@ struct ThreadPool : public std::vector<Thread*> {
   void exit();       // be initialized and valid during the whole thread lifetime.
   void start_thinking(Position&, StateListPtr&, const Search::LimitsType&, bool = false);
   void set(size_t);
-
+  
   MainThread* main()        const { return static_cast<MainThread*>(front()); }
   uint64_t nodes_searched() const { return accumulate(&Thread::nodes); }
   uint64_t tb_hits()        const { return accumulate(&Thread::tbHits); }
 
-  std::atomic_bool stop, ponder, stopOnPonderhit;
-
-private:
+  std::atomic_bool abort, stop, ponder, stopOnPonderhit;
   StateListPtr setupStates;
 
+private:
   uint64_t accumulate(std::atomic<uint64_t> Thread::* member) const {
 
     uint64_t sum = 0;

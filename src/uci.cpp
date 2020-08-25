@@ -2,7 +2,7 @@
   Stockfish, a UCI chess playing engine derived from Glaurung 2.1
   Copyright (C) 2004-2008 Tord Romstad (Glaurung author)
   Copyright (C) 2008-2015 Marco Costalba, Joona Kiiski, Tord Romstad
-  Copyright (C) 2015-2017 Marco Costalba, Joona Kiiski, Gary Linscott, Tord Romstad
+  Copyright (C) 2015-2020 Marco Costalba, Joona Kiiski, Gary Linscott, Tord Romstad
 
   Stockfish is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -28,9 +28,10 @@
 #include "position.h"
 #include "search.h"
 #include "thread.h"
-#include "tt.h"
 #include "timeman.h"
+#include "tt.h"
 #include "uci.h"
+#include "xboard.h"
 #include "syzygy/tbprobe.h"
 
 using namespace std;
@@ -39,7 +40,7 @@ extern vector<string> setup_bench(const Position&, istream&);
 
 namespace {
 
-  // FEN string of the initial position, normal chess
+  // FEN string of the initial position, makruk
   const char* StartFEN = "rnsmksnr/8/pppppppp/8/8/PPPPPPPP/8/RNSKMSNR w 0 1";
 
 
@@ -89,15 +90,15 @@ namespace {
 
     // Read option name (can contain spaces)
     while (is >> token && token != "value")
-        name += string(" ", name.empty() ? 0 : 1) + token;
+        name += (name.empty() ? "" : " ") + token;
 
     // Read option value (can contain spaces)
     while (is >> token)
-        value += string(" ", value.empty() ? 0 : 1) + token;
+        value += (value.empty() ? "" : " ") + token;
 
     if (Options.count(name))
         Options[name] = value;
-    else
+   else
         sync_cout << "No such option: " << name << sync_endl;
   }
 
@@ -107,7 +108,7 @@ namespace {
   // the search.
 
   void go(Position& pos, istringstream& is, StateListPtr& states) {
-
+  
     Search::LimitsType limits;
     string token;
     bool ponderMode = false;
@@ -146,7 +147,7 @@ namespace {
     uint64_t num, nodes = 0, cnt = 1;
 
     vector<string> list = setup_bench(pos, args);
-    num = count_if(list.begin(), list.end(), [](string s) { return s.find("go ") == 0; });
+    num = count_if(list.begin(), list.end(), [](string s) { return s.find("go ") == 0 || s.find("eval") == 0; });
 
     TimePoint elapsed = now();
 
@@ -155,16 +156,21 @@ namespace {
         istringstream is(cmd);
         is >> skipws >> token;
 
-        if (token == "go")
+        if (token == "go" || token == "eval")
         {
             cerr << "\nPosition: " << cnt++ << '/' << num << endl;
-            go(pos, is, states);
-            Threads.main()->wait_for_search_finished();
-            nodes += Threads.nodes_searched();
+            if (token == "go")
+            {
+               go(pos, is, states);
+               Threads.main()->wait_for_search_finished();
+               nodes += Threads.nodes_searched();
+            }
+            else
+               sync_cout << "\n" << Eval::trace(pos) << sync_endl;
         }
         else if (token == "setoption")  setoption(is);
         else if (token == "position")   position(pos, is, states);
-        else if (token == "ucinewgame") Search::clear();
+        else if (token == "ucinewgame") { Search::clear(); elapsed = now(); } // Search::clear() may take some while
     }
 
     elapsed = now() - elapsed + 1; // Ensure positivity to avoid a 'divide by zero'
@@ -194,9 +200,12 @@ void UCI::loop(int argc, char* argv[]) {
   auto uiThread = std::make_shared<Thread>(0);
 
   pos.set(StartFEN, false, &states->back(), uiThread.get());
-
+  
   for (int i = 1; i < argc; ++i)
       cmd += std::string(argv[i]) + " ";
+
+  // XBoard state machine
+  XBoard::StateMachine xboardStateMachine;
 
   do {
       if (argc == 1 && !getline(cin, cmd)) // Block here waiting for input or EOF
@@ -219,11 +228,19 @@ void UCI::loop(int argc, char* argv[]) {
 
       else if (token == "ponderhit")
           Threads.ponder = false; // Switch to normal search
-
-      else if (token == "uci")
-          sync_cout << "id name " << engine_info(true)
-                    << "\n"       << Options
-                    << "\nuciok"  << sync_endl;
+  
+      else if (token == "uci" || token == "xboard")
+      {
+          Options["Protocol"].set_default(token);
+          string defaultVariant = string("makruk");
+          Options["UCI_Variant"].set_default(defaultVariant);
+          if (token != "xboard")
+              sync_cout << "id name " << engine_info(true, false)
+                        << "\n"       << Options
+                        << "\nuciok"  << sync_endl;
+      }                   
+      else if (Options["Protocol"] == "xboard")
+          xboardStateMachine.process_command(pos, token, is, states);
 
       else if (token == "setoption")  setoption(is);
       else if (token == "go")         go(pos, is, states);
@@ -231,11 +248,13 @@ void UCI::loop(int argc, char* argv[]) {
       else if (token == "ucinewgame") Search::clear();
       else if (token == "isready")    sync_cout << "readyok" << sync_endl;
 
-      // Additional custom non-UCI commands, mainly for debugging
-      else if (token == "flip")  pos.flip();
-      else if (token == "bench") bench(pos, is, states);
-      else if (token == "d")     sync_cout << pos << sync_endl;
-      else if (token == "eval")  sync_cout << Eval::trace(pos) << sync_endl;
+      // Additional custom non-UCI commands, mainly for debugging.
+      // Do not use these commands during a search!
+      else if (token == "flip")     pos.flip();
+      else if (token == "bench")    bench(pos, is, states);
+      else if (token == "d")        sync_cout << pos << sync_endl;
+      else if (token == "eval")     sync_cout << Eval::trace(pos) << sync_endl;
+      else if (token == "compiler") sync_cout << compiler_info() << sync_endl;
       else
           sync_cout << "Unknown command: " << cmd << sync_endl;
 
@@ -250,16 +269,24 @@ void UCI::loop(int argc, char* argv[]) {
 /// mate <y>  Mate in y moves, not plies. If the engine is getting mated
 ///           use negative values for y.
 
-string UCI::value(Value v) {
+std::string UCI::value(Value v) {
 
   assert(-VALUE_INFINITE < v && v < VALUE_INFINITE);
 
   stringstream ss;
 
-  if (abs(v) < VALUE_MATE - MAX_PLY)
+  if (Options["Protocol"] == "xboard")
+  {
+      if (abs(v) < VALUE_MATE_IN_MAX_PLY)
+          ss << v * 100 / PawnValueEg;
+      else
+          ss << (v > 0 ? XBOARD_VALUE_MATE + VALUE_MATE - v + 1 : -XBOARD_VALUE_MATE - VALUE_MATE - v - 1) / 2;
+  } else
+
+  if (abs(v) < VALUE_MATE_IN_MAX_PLY)
       ss << "cp " << v * 100 / PawnValueEg;
   else
-      ss << "mate " << (v > 0 ? VALUE_MATE - v + 1 : -VALUE_MATE - v) / 2;
+      ss << "mate " << (v > 0 ? VALUE_MATE - v + 1 : -VALUE_MATE - v - 1) / 2;
 
   return ss.str();
 }
@@ -286,10 +313,10 @@ string UCI::move(Move m) {
       return "0000";
 
   string move = UCI::square(from) + UCI::square(to);
-
+  
   if (type_of(m) == PROMOTION)
       move += " pmsnrk"[promotion_type(m)];
-
+   
   return move;
 }
 
@@ -301,10 +328,14 @@ Move UCI::to_move(const Position& pos, string& str) {
 
   if (str.length() == 5) // Junior could send promotion piece in uppercase
       str[4] = char(tolower(str[4]));
-
+  
   for (const auto& m : MoveList<LEGAL>(pos))
       if (str == UCI::move(m))
           return m;
 
   return MOVE_NONE;
+}
+
+std::string UCI::get_startFEN(){
+    return std::string(StartFEN);
 }
