@@ -96,7 +96,7 @@ cat << EOF > game.exp
  send "go nodes 1000\n"
  expect "bestmove"
 
- send "position fen 5rk1/1K4p1/8/8/3B4/8/8/8 b - - 0 1\n"
+ send "position fen 8/8/8/8/2M5/2S5/k1K5/8 w 0 1\n"
  send "go depth 30\n"
  expect "bestmove"
 
