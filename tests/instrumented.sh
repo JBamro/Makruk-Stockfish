@@ -92,7 +92,7 @@ cat << EOF > game.exp
  send "go nodes 1000\n"
  expect "bestmove"
 
- send "position startpos moves e2e4 e7e6\n"
+ send "position startpos moves e3e4 d6d5\n"
  send "go nodes 1000\n"
  expect "bestmove"
 
